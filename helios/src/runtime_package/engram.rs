@@ -82,6 +82,22 @@ fn validate_shards(table: &wire::EngramTable, world: usize) -> Result<()> {
     Ok(())
 }
 
+fn table_geometry(
+    encoding: wire::engram_table::Encoding,
+    global_scale: f32,
+) -> Option<(u32, u32, usize, usize)> {
+    match encoding {
+        wire::engram_table::Encoding::Fp8E4m3E8m0 => Some((256, 32, 256, 8)),
+        wire::engram_table::Encoding::Mxfp4E2m1E8m0 => Some((256, 32, 128, 8)),
+        wire::engram_table::Encoding::Nvfp4E4m3Global
+            if global_scale.is_finite() && global_scale > 0.0 =>
+        {
+            Some((160, 16, 80, 10))
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn decode<F: super::payload::Files>(
     value: wire::Engram,
     archive: &F,
@@ -113,15 +129,9 @@ pub(super) fn decode<F: super::payload::Files>(
         let gpu = !table.request_buffer.is_empty();
         let encoding = wire::engram_table::Encoding::try_from(table.encoding)
             .map_err(|_| invalid("unknown n-gram encoding"))?;
-        let (width, block, row_bytes, scale_bytes) = match encoding {
-            wire::engram_table::Encoding::Fp8E4m3E8m0 => (256, 32, 256, 8),
-            wire::engram_table::Encoding::Nvfp4E4m3Global
-                if table.global_scale.is_finite() && table.global_scale > 0.0 =>
-            {
-                (160, 16, 80, 10)
-            }
-            _ => return Err(invalid("invalid n-gram encoding or global scale")),
-        };
+        let (width, block, row_bytes, scale_bytes) =
+            table_geometry(encoding, table.global_scale)
+                .ok_or_else(|| invalid("invalid n-gram encoding or global scale"))?;
         let geometry = table
             .hash
             .as_ref()
@@ -320,6 +330,25 @@ mod tests {
                 .collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn mx_fp4_engram_packs_two_e2m1_values_per_byte_with_block_32_scales() {
+        use wire::engram_table::Encoding;
+        assert_eq!(
+            table_geometry(Encoding::Mxfp4E2m1E8m0, 0.0),
+            Some((256, 32, 128, 8))
+        );
+        assert_eq!(
+            table_geometry(Encoding::Fp8E4m3E8m0, 0.0),
+            Some((256, 32, 256, 8))
+        );
+        assert_eq!(
+            table_geometry(Encoding::Nvfp4E4m3Global, 1.0),
+            Some((160, 16, 80, 10))
+        );
+        assert_eq!(table_geometry(Encoding::Nvfp4E4m3Global, 0.0), None);
+        assert_eq!(table_geometry(Encoding::Unspecified, 0.0), None);
     }
 
     #[test]
